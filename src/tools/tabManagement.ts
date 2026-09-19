@@ -47,6 +47,11 @@ export class TabManagementToolCategory extends BaseToolCategory {
         // Split pane operations
         this.registerTool(this.createSplitTabTool());
 
+        // JJT: tab group tools
+        this.registerTool(this.createListTabGroupsTool());
+        this.registerTool(this.createOpenTabInGroupTool());
+        this.registerTool(this.createSetTabGroupTool());
+
         this.logger.info('Tab management tools initialized');
     }
 
@@ -1123,6 +1128,109 @@ The active tab must be inside a SplitTabComponent, or be a terminal that can be 
                     return {
                         content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }]
                     };
+                }
+            }
+        };
+    }
+
+    // ============= JJT: Tab Group Operations =============
+    // These use JJT's tab-group APIs on AppService, which aren't in upstream
+    // tabby-core typings, so `app` is accessed as `any`.
+
+    private createListTabGroupsTool(): McpTool {
+        return {
+            name: 'list_tab_groups',
+            description: 'List the named tab groups (id, name, color, collapsed, tab count).',
+            schema: z.object({}),
+            handler: async () => {
+                try {
+                    const app = this.app as any;
+                    const groups = (app.tabGroups ?? []).map((g: any) => ({
+                        id: g.id,
+                        name: g.name,
+                        color: g.color ?? null,
+                        collapsed: !!g.collapsed,
+                        tabCount: this.app.tabs.filter(t => (t as any).groupId === g.id).length,
+                    }));
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: true, groups, count: groups.length }, null, 2) }] };
+                } catch (error: any) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }] };
+                }
+            }
+        };
+    }
+
+    private createOpenTabInGroupTool(): McpTool {
+        return {
+            name: 'open_tab_in_group',
+            description: `Open a NEW terminal tab, optionally placing it in a named tab group (created if it doesn't exist).
+Parameters:
+- group: group name to put the new tab in (optional; omit to open ungrouped)
+- profileName: profile to open (optional; defaults to the default local shell)`,
+            schema: z.object({
+                group: z.string().optional().describe('Tab group name (created if missing)'),
+                profileName: z.string().optional().describe('Profile name (partial, case-insensitive); defaults to a local shell'),
+            }),
+            handler: async (params: { group?: string; profileName?: string }) => {
+                try {
+                    const profiles = await this.profilesService.getProfiles();
+                    const profile = params.profileName
+                        ? profiles.find(p => p.name.toLowerCase().includes(params.profileName!.toLowerCase()))
+                        : (profiles.find(p => p.type === 'local') ?? profiles[0]);
+                    if (!profile) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No matching profile', availableProfiles: profiles.map(p => p.name) }) }] };
+                    }
+                    const opened = await this.profilesService.openNewTabForProfile(profile);
+                    if (!opened) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Failed to open tab' }) }] };
+                    }
+                    const top = (opened.parent instanceof SplitTabComponent ? opened.parent : opened) as BaseTabComponent;
+                    let groupInfo: any = null;
+                    if (params.group) {
+                        const app = this.app as any;
+                        const existing = (app.tabGroups ?? []).find((g: any) => g.name.toLowerCase() === params.group!.toLowerCase());
+                        const group = existing ?? app.createTabGroup(params.group);
+                        app.assignTabToGroup(top, group.id);
+                        groupInfo = { id: group.id, name: group.name };
+                    }
+                    const tabId = this.getOrCreateTabId(top);
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: true, tabId, profile: profile.name, group: groupInfo }, null, 2) }] };
+                } catch (error: any) {
+                    this.logger.error('[open_tab_in_group] Error:', error);
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }] };
+                }
+            }
+        };
+    }
+
+    private createSetTabGroupTool(): McpTool {
+        return {
+            name: 'set_tab_group',
+            description: `Move a tab into a named tab group, or remove it from its group. Get tabId from list_tabs.
+Parameters:
+- tabId: the tab to move
+- group: target group name (created if needed); null or empty to remove the tab from any group`,
+            schema: z.object({
+                tabId: z.string().describe('Tab id from list_tabs'),
+                group: z.string().nullable().optional().describe('Group name, or null/empty to ungroup'),
+            }),
+            handler: async (params: { tabId: string; group?: string | null }) => {
+                try {
+                    const tab = this.findTabById(params.tabId);
+                    if (!tab) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: `Tab not found: ${params.tabId}` }) }] };
+                    }
+                    const app = this.app as any;
+                    if (!params.group) {
+                        app.removeTabFromGroup(tab);
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: true, tabId: params.tabId, group: null }) }] };
+                    }
+                    const existing = (app.tabGroups ?? []).find((g: any) => g.name.toLowerCase() === params.group!.toLowerCase());
+                    const group = existing ?? app.createTabGroup(params.group);
+                    app.assignTabToGroup(tab, group.id);
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: true, tabId: params.tabId, group: { id: group.id, name: group.name } }) }] };
+                } catch (error: any) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }] };
                 }
             }
         };

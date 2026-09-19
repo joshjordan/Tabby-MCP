@@ -40,14 +40,17 @@ export class McpService {
     private readonly instanceId = randomUUID();
     private controlToken?: string;
 
+    // JJT: keep the MCP surface small. Only this curated, tab-focused set of tools
+    // is ever exposed; everything else (exec, SFTP, SSH, extra tab ops) is off.
+    private static readonly JJT_ALLOWED_TOOLS = new Set<string>([
+        'list_tabs',
+        'list_tab_groups',
+        'open_tab_in_group',
+        'set_tab_group',
+    ]);
+
     private isToolEnabled(toolName: string): boolean {
-        if (toolName === 'get_session_environment') {
-            return this.config?.store?.mcp?.environmentDetection?.enabled === true;
-        }
-        if (toolName.startsWith('sftp_')) {
-            return this.config?.store?.mcp?.sftp?.enabled !== false;
-        }
-        return true;
+        return McpService.JJT_ALLOWED_TOOLS.has(toolName);
     }
 
     private getEnabledToolsFromCategory(category: ToolCategory): McpTool[] {

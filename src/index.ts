@@ -1,13 +1,5 @@
 import { NgModule, OnDestroy } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import TabbyCoreModule, {
-    AppService,
-    ConfigProvider,
-    ConfigService
-} from 'tabby-core';
-import { SettingsTabProvider } from 'tabby-settings';
-import { NgbModule } from '@ng-bootstrap/ng-bootstrap';
+import { AppService, ConfigProvider, ConfigService } from 'tabby-core';
 import { Subscription } from 'rxjs';
 
 // Services
@@ -21,30 +13,19 @@ import { TerminalToolCategory } from './tools/terminal';
 import { TabManagementToolCategory } from './tools/tabManagement';
 import { SFTPToolCategory } from './tools/sftp';
 
-// Settings
-import { McpSettingsTabProvider } from './settings';
-import { McpSettingsTabComponent } from './components/mcpSettingsTab.component';
-
-// Styles
-import './styles.scss';
-
 /**
- * MCP Module - Main Angular module for the Tabby MCP plugin
- * 
- * Features:
- * - Complete terminal control (exec, buffer, abort)
- * - Tab management (create, close, duplicate, move, select)
- * - Profile management (list, open, quick connect SSH)
- * - Pair programming mode with command confirmation
- * - Comprehensive logging
+ * JJT: MCP module, reduced to a pure service module.
+ *
+ * This plugin builds with its own TypeScript 5.x toolchain (its deps use syntax
+ * JJT's Angular 15 / TS 4.9 compiler can't parse), so it is NOT Ivy-compiled by
+ * JJT. An @NgModule that imports TabbyCoreModule/CommonModule/etc. would drag
+ * Tabby's AOT module graph into JIT compilation at load and fail
+ * ("NgxFilesizeModule does not have a module def"). Since the tools only need
+ * root-provided services (AppService, ConfigService, ProfilesService), we drop
+ * all module imports and the settings-tab component and keep just the providers.
+ * Server config comes from McpConfigProvider defaults.
  */
 @NgModule({
-    imports: [
-        CommonModule,
-        FormsModule,
-        TabbyCoreModule,
-        NgbModule
-    ],
     providers: [
         McpService,
         McpLoggerService,
@@ -52,11 +33,7 @@ import './styles.scss';
         TerminalToolCategory,
         TabManagementToolCategory,
         SFTPToolCategory,
-        { provide: SettingsTabProvider, useClass: McpSettingsTabProvider, multi: true },
         { provide: ConfigProvider, useClass: McpConfigProvider, multi: true }
-    ],
-    declarations: [
-        McpSettingsTabComponent
     ]
 })
 export default class McpModule implements OnDestroy {
@@ -75,15 +52,10 @@ export default class McpModule implements OnDestroy {
     ) {
         this.logger.info('MCP Module loading...');
 
-        // Register all tool categories with MCP service
-        this.mcpService.registerToolCategory(this.terminalTools);
+        // JJT: expose a lean, tab-focused toolset only. The terminal (exec) and
+        // SFTP categories are intentionally not registered, and the allowlist in
+        // McpService narrows tab_management down to the tab/group tools.
         this.mcpService.registerToolCategory(this.tabManagementTools);
-
-        // Register SFTP tools if available (tabby-ssh installed)
-        if (this.sftpTools.isAvailable()) {
-            this.mcpService.registerToolCategory(this.sftpTools);
-            this.logger.info('SFTP tools registered');
-        }
 
         // Initialize server after app is ready
         this.appReadySubscription = this.app.ready$.subscribe(() => {
