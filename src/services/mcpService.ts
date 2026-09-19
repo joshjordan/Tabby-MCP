@@ -44,6 +44,8 @@ export class McpService {
     // is ever exposed; everything else (exec, SFTP, SSH, extra tab ops) is off.
     private static readonly JJT_ALLOWED_TOOLS = new Set<string>([
         'list_tabs',
+        'select_tab',
+        'close_tab',
         'list_tab_groups',
         'open_tab_in_group',
         'set_tab_group',
