@@ -49,6 +49,7 @@ export class McpService {
         'list_tab_groups',
         'open_tab_in_group',
         'set_tab_group',
+        'set_tab_title',
     ]);
 
     private isToolEnabled(toolName: string): boolean {

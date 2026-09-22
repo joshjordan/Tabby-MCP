@@ -51,6 +51,7 @@ export class TabManagementToolCategory extends BaseToolCategory {
         this.registerTool(this.createListTabGroupsTool());
         this.registerTool(this.createOpenTabInGroupTool());
         this.registerTool(this.createSetTabGroupTool());
+        this.registerTool(this.createSetTabTitleTool());
 
         this.logger.info('Tab management tools initialized');
     }
@@ -1137,6 +1138,51 @@ The active tab must be inside a SplitTabComponent, or be a terminal that can be 
     // These use JJT's tab-group APIs on AppService, which aren't in upstream
     // tabby-core typings, so `app` is accessed as `any`.
 
+    /**
+     * Pick the profile a plain "new tab" should use: the user's configured
+     * default, else a zsh shell, else the first builtin local shell. Tabby's
+     * builtin list tends to put bash first, so without this a new MCP tab opens
+     * bash even on macOS where zsh is the login shell.
+     */
+    private pickDefaultLocalProfile(profiles: any[]): any {
+        const local = profiles.filter(p => p.type === 'local');
+        const defaultId = (this.config.store as any).terminal?.profile;
+        const configured = typeof defaultId === 'string' ? local.find(p => p.id === defaultId) : undefined;
+        const isZsh = (p: any) => /zsh/i.test(p.name ?? '') || /zsh(\s|$)/i.test(p.options?.command ?? '');
+        return configured
+            ?? local.find(isZsh)
+            ?? local.find(p => p.isBuiltin)
+            ?? local[0]
+            ?? profiles[0];
+    }
+
+    private createSetTabTitleTool(): McpTool {
+        return {
+            name: 'set_tab_title',
+            description: `Rename a tab, pinning a custom title that dynamic updates won't overwrite. Get tabId from list_tabs.
+Parameters:
+- tabId: the tab to rename
+- title: the new title`,
+            schema: z.object({
+                tabId: z.string().describe('Tab id from list_tabs'),
+                title: z.string().describe('New tab title'),
+            }),
+            handler: async (params: { tabId: string; title: string }) => {
+                try {
+                    const tab = this.findTabById(params.tabId);
+                    if (!tab) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: `Tab not found: ${params.tabId}` }) }] };
+                    }
+                    tab.setTitle(params.title);
+                    (tab as any).customTitle = params.title;
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: true, tabId: params.tabId, title: params.title }) }] };
+                } catch (error: any) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }) }] };
+                }
+            }
+        };
+    }
+
     private createListTabGroupsTool(): McpTool {
         return {
             name: 'list_tab_groups',
@@ -1176,7 +1222,7 @@ Parameters:
                     const profiles = await this.profilesService.getProfiles();
                     const profile = params.profileName
                         ? profiles.find(p => p.name.toLowerCase().includes(params.profileName!.toLowerCase()))
-                        : (profiles.find(p => p.type === 'local') ?? profiles[0]);
+                        : this.pickDefaultLocalProfile(profiles);
                     if (!profile) {
                         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No matching profile', availableProfiles: profiles.map(p => p.name) }) }] };
                     }
