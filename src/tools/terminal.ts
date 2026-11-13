@@ -10,6 +10,7 @@ import { BaseToolCategory } from './base-tool-category';
 import { McpLoggerService } from '../services/mcpLogger.service';
 import { DialogService } from '../services/dialog.service';
 import { McpTool, ActiveCommand, CommandResult, EnhancedTerminalSession, SessionLocator } from '../types/types';
+import { tabDisplayTitle } from './tabTitle';
 
 /**
  * Terminal session with stable ID for tracking
@@ -288,12 +289,18 @@ export class TerminalToolCategory extends BaseToolCategory {
             if (found) return found;
         }
 
-        // Priority 3: title (partial, case-insensitive)
+        // Priority 3: title (partial, case-insensitive). Match the name shown in
+        // the tab strip (honoring a manual rename), or the Claude session
+        // description shown in the top bar.
         if (locator.title) {
             const titleLower = locator.title.toLowerCase();
-            const found = sessions.find(s =>
-                s.tab.title?.toLowerCase().includes(titleLower)
-            );
+            const found = sessions.find(s => {
+                if (tabDisplayTitle(s.tabParent).toLowerCase().includes(titleLower)) {
+                    return true;
+                }
+                const description = (s.tab as any).claudeTitle;
+                return typeof description === 'string' && description.toLowerCase().includes(titleLower);
+            });
             if (found) return found;
         }
 
@@ -352,24 +359,54 @@ export class TerminalToolCategory extends BaseToolCategory {
             description: `Get list of all terminal sessions with stable IDs and metadata.
 Use sessionId (stable UUID) for reliable session targeting.
 
+Titles:
+- title: the name shown in the tab strip, including any title you set by renaming the tab by hand
+- sessionDescription: the Claude Code session description shown in the tab's top bar, or null
+
+Each session carries a "group" object (null if the tab is ungrouped):
+- id / name: the named tab group this tab belongs to
+- color: the group's color as a hex string (null if the group has no color set)
+
 For split panes:
 - isSplit: true if this session is inside a split tab
 - splitTabIndex: Index of parent tab (use for grouping panes)
 - paneIndex: Position within the split (0, 1, 2, ...)
 - totalPanes: Number of panes in the split
-- isFocusedPane: Whether this is the currently focused pane`,
+- isFocusedPane: Whether this is the currently focused pane
+
+For tabs running Claude Code, a "claude" object is present:
+- sessionId: the live Claude Code session id in this tab (null if none running)
+- resumableSessionId: a prior session this tab can resume (null if none)
+- running: whether a Claude session is currently active
+- waiting: tab-header "needs your input" indicator is on
+- busy: raw hook busy flag (set on UserPromptSubmit, cleared on Stop/SessionEnd)
+- working: the animated "working" indicator (busy OR recent transcript growth)
+- title: Claude's current title for the session
+- transcriptPath: path to the session JSONL transcript
+- contextTokens / contextWindow: context-window usage
+- tabId: the JJT per-tab id injected as JJT_TAB_ID`,
             schema: z.object({}),
             handler: async () => {
                 const sessions = this.findTerminalSessions();
+                const tabGroups = (this.app as any).tabGroups ?? [];
                 const result = sessions.map(s => {
                     const tabAny = s.tab as any;
                     const keyboardInteractivePrompt = this.getKeyboardInteractivePrompt(s);
+                    // Group membership lives on the top-level tab, not the leaf pane.
+                    const groupId = (s.tabParent as any)?.groupId ?? null;
+                    const group = groupId ? tabGroups.find((g: any) => g.id === groupId) : null;
                     return {
                         sessionId: s.sessionId,
                         tabIndex: s.tabIndex,
-                        title: s.tab.title || `Terminal ${s.tabIndex}`,
+                        title: tabDisplayTitle(s.tabParent) || s.tab.title || `Terminal ${s.tabIndex}`,
+                        sessionDescription: (s.tab as any).claudeTitle ?? null,
                         type: s.tab.constructor.name,
                         isActive: this.app.activeTab === s.tabParent,
+                        group: group ? {
+                            id: group.id,
+                            name: group.name,
+                            color: group.color ?? null,
+                        } : null,
                         hasActiveCommand: this._activeCommands.has(s.sessionId),
                         sshConnected: tabAny.sshSession?.open === true,
                         keyboardInteractivePending: Boolean(keyboardInteractivePrompt),
@@ -381,6 +418,26 @@ For split panes:
                         } : undefined,
                         pid: tabAny.session?.pty?.pid,
                         cwd: tabAny.session?.cwd,
+                        // JJT: per-tab Claude Code session state, present only on
+                        // JJT local terminal tabs (the bridge sets these fields).
+                        claude: 'jjtTabId' in tabAny ? {
+                            sessionId: tabAny.claudeSessionId ?? null,
+                            resumableSessionId: tabAny.resumableSessionId ?? null,
+                            running: tabAny.claudeSessionRunning ?? false,
+                            // Live indicator state, for debugging the tab-header
+                            // spinner. "working" is the ●●● thinking indicator
+                            // (busy OR recent transcript growth); "waiting" is the
+                            // needs-your-input indicator; "busy" is the raw hook
+                            // flag (set on UserPromptSubmit, cleared on Stop).
+                            waiting: tabAny.claudeWaiting ?? false,
+                            busy: tabAny.claudeBusy ?? false,
+                            working: tabAny.claudeWorking ?? false,
+                            title: tabAny.claudeTitle ?? null,
+                            transcriptPath: tabAny.claudeTranscriptPath ?? null,
+                            contextTokens: tabAny.claudeContextTokens ?? 0,
+                            contextWindow: tabAny.claudeContextWindow ?? 0,
+                            tabId: tabAny.jjtTabId ?? null,
+                        } : undefined,
                         // Split pane information
                         isSplit: s.isSplit,
                         splitTabIndex: s.splitTabIndex,
@@ -647,7 +704,7 @@ Special keys: \\x03 (Ctrl+C), \\x04 (Ctrl+D), \\x1b (Escape), \\r (Enter)`,
                 if (pairMode?.enabled && pairMode?.showConfirmationDialog) {
                     const confirmed = await this.dialogService.showOperationConfirmation(
                         'send_input',
-                        session.tab.title || `Terminal ${session.tabIndex}`,
+                        tabDisplayTitle(session.tabParent) || `Terminal ${session.tabIndex}`,
                         `Terminal input after escape decoding:\n${JSON.stringify(processedInput)}`
                     );
                     if (!confirmed) {
@@ -795,7 +852,7 @@ Session targeting: sessionId (recommended) > tabIndex > title > profileName`,
                 if (pairMode?.enabled && pairMode?.showConfirmationDialog) {
                     const confirmed = await this.dialogService.showOperationConfirmation(
                         'submit_keyboard_interactive_response',
-                        session.tab.title || `Terminal ${session.tabIndex}`,
+                        tabDisplayTitle(session.tabParent) || `Terminal ${session.tabIndex}`,
                         `${providedResponses.length} keyboard-interactive response(s)`
                     );
                     if (!confirmed) {
@@ -1243,7 +1300,7 @@ After focusing, commands sent to that split tab will go to the focused pane.`,
                                 message: `Focused pane ${session.paneIndex} of ${session.totalPanes}`,
                                 sessionId: session.sessionId,
                                 paneIndex: session.paneIndex,
-                                title: session.tab.title
+                                title: tabDisplayTitle(session.tabParent) || session.tab.title
                             })
                         }]
                     };

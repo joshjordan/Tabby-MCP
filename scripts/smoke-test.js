@@ -15,8 +15,8 @@ function testToolCount() {
         'src/tools/sftp.ts'
     ];
     const counts = files.map(file => (read(file).match(/this\.registerTool\(/g) || []).length);
-    assert.deepEqual(counts, [9, 15, 12], 'Unexpected tool count per category');
-    assert.equal(counts.reduce((sum, count) => sum + count, 0), 36, 'Expected 36 registered MCP tools');
+    assert.deepEqual(counts, [9, 19, 12], 'Unexpected tool count per category');
+    assert.equal(counts.reduce((sum, count) => sum + count, 0), 40, 'Expected 40 registered MCP tools');
 }
 
 function testNoBlockingBrowserDialogs() {
@@ -147,6 +147,63 @@ function testBridgeSyntax() {
     new vm.Script(read('scripts/stdio-bridge.js'), { filename: 'scripts/stdio-bridge.js' });
 }
 
+function loadTabTitleHelpers() {
+    const ts = require('typescript');
+    const js = ts.transpileModule(read('src/tools/tabTitle.ts'), {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 }
+    }).outputText;
+    const moduleObj = { exports: {} };
+    new Function('module', 'exports', js)(moduleObj, moduleObj.exports);
+    return moduleObj.exports;
+}
+
+function testRenamedTabTitles() {
+    const { tabDisplayTitle, tabSessionDescription, tabTitleMatches } = loadTabTitleHelpers();
+
+    // A tab renamed by hand, whose Claude session description differs from the
+    // name the user gave it. The MCP must report the strip name, never the
+    // session description, and must still expose the description separately.
+    const renamed = {
+        customTitle: 'Job clusters',
+        title: 'Investigate duplicate job copies Asana card',
+        claudeTitle: 'Investigate duplicate job copies Asana card',
+    };
+    assert.equal(tabDisplayTitle(renamed), 'Job clusters', 'A renamed tab must report its hand-set name');
+    assert.equal(
+        tabSessionDescription(renamed),
+        'Investigate duplicate job copies Asana card',
+        'The session description must stay available as its own value'
+    );
+    assert.equal(tabTitleMatches(renamed, 'job clusters'), true, 'A title locator must match the strip name');
+    assert.equal(tabTitleMatches(renamed, 'investigate'), true, 'A title locator may also match the session description');
+    assert.equal(tabTitleMatches(renamed, 'nonexistent'), false, 'A title locator must not match unrelated text');
+
+    // A non-renamed Claude tab: the strip shows the dynamic Claude title.
+    const notRenamed = { title: 'observe-browser-pool-backpressure', claudeTitle: 'observe-browser-pool-backpressure' };
+    assert.equal(tabDisplayTitle(notRenamed), 'observe-browser-pool-backpressure', 'A non-renamed tab reports its dynamic title');
+
+    // A renamed split tab carrying a Claude pane: the strip name comes from the
+    // hand-set custom title, the description from the pane.
+    const split = {
+        customTitle: 'Browser pool inspection',
+        title: 'left | observe-browser-pool-backpressure',
+        getAllTabs: () => [{ title: 'left' }, { claudeTitle: 'observe-browser-pool-backpressure' }],
+    };
+    assert.equal(tabDisplayTitle(split), 'Browser pool inspection', 'A renamed split tab reports its hand-set name');
+    assert.equal(
+        tabSessionDescription(split),
+        'observe-browser-pool-backpressure',
+        'A split tab exposes its pane session description'
+    );
+
+    // A plain tab with no Claude session has no description.
+    assert.equal(
+        tabSessionDescription({ customTitle: 'Notes', title: 'zsh' }),
+        null,
+        'A tab without a Claude session has no session description'
+    );
+}
+
 const tests = [
     ['tool count', testToolCount],
     ['non-blocking dialogs', testNoBlockingBrowserDialogs],
@@ -155,7 +212,8 @@ const tests = [
     ['approval and cancellation guards', testApprovalAndCancellationGuards],
     ['translation parity', testTranslations],
     ['pinned MCP SDK', testPinnedSdkAndLockfile],
-    ['stdio bridge syntax', testBridgeSyntax]
+    ['stdio bridge syntax', testBridgeSyntax],
+    ['renamed tab titles', testRenamedTabTitles]
 ];
 
 for (const [name, test] of tests) {

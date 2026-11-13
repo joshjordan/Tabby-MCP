@@ -25515,6 +25515,7 @@ const zod_1 = __webpack_require__(7552);
 const base_tool_category_1 = __webpack_require__(2099);
 const mcpLogger_service_1 = __webpack_require__(9924);
 const dialog_service_1 = __webpack_require__(8556);
+const tabTitle_1 = __webpack_require__(9981);
 /**
  * Terminal Tools Category - Commands for terminal control
  * Enhanced with stable session IDs and flexible session targeting
@@ -25741,10 +25742,18 @@ let TerminalToolCategory = class TerminalToolCategory extends base_tool_category
             if (found)
                 return found;
         }
-        // Priority 3: title (partial, case-insensitive)
+        // Priority 3: title (partial, case-insensitive). Match the name shown in
+        // the tab strip (honoring a manual rename), or the Claude session
+        // description shown in the top bar.
         if (locator.title) {
             const titleLower = locator.title.toLowerCase();
-            const found = sessions.find(s => s.tab.title?.toLowerCase().includes(titleLower));
+            const found = sessions.find(s => {
+                if ((0, tabTitle_1.tabDisplayTitle)(s.tabParent).toLowerCase().includes(titleLower)) {
+                    return true;
+                }
+                const description = s.tab.claudeTitle;
+                return typeof description === 'string' && description.toLowerCase().includes(titleLower);
+            });
             if (found)
                 return found;
         }
@@ -25799,24 +25808,54 @@ let TerminalToolCategory = class TerminalToolCategory extends base_tool_category
             description: `Get list of all terminal sessions with stable IDs and metadata.
 Use sessionId (stable UUID) for reliable session targeting.
 
+Titles:
+- title: the name shown in the tab strip, including any title you set by renaming the tab by hand
+- sessionDescription: the Claude Code session description shown in the tab's top bar, or null
+
+Each session carries a "group" object (null if the tab is ungrouped):
+- id / name: the named tab group this tab belongs to
+- color: the group's color as a hex string (null if the group has no color set)
+
 For split panes:
 - isSplit: true if this session is inside a split tab
 - splitTabIndex: Index of parent tab (use for grouping panes)
 - paneIndex: Position within the split (0, 1, 2, ...)
 - totalPanes: Number of panes in the split
-- isFocusedPane: Whether this is the currently focused pane`,
+- isFocusedPane: Whether this is the currently focused pane
+
+For tabs running Claude Code, a "claude" object is present:
+- sessionId: the live Claude Code session id in this tab (null if none running)
+- resumableSessionId: a prior session this tab can resume (null if none)
+- running: whether a Claude session is currently active
+- waiting: tab-header "needs your input" indicator is on
+- busy: raw hook busy flag (set on UserPromptSubmit, cleared on Stop/SessionEnd)
+- working: the animated "working" indicator (busy OR recent transcript growth)
+- title: Claude's current title for the session
+- transcriptPath: path to the session JSONL transcript
+- contextTokens / contextWindow: context-window usage
+- tabId: the JJT per-tab id injected as JJT_TAB_ID`,
             schema: zod_1.z.object({}),
             handler: async () => {
                 const sessions = this.findTerminalSessions();
+                const tabGroups = this.app.tabGroups ?? [];
                 const result = sessions.map(s => {
                     const tabAny = s.tab;
                     const keyboardInteractivePrompt = this.getKeyboardInteractivePrompt(s);
+                    // Group membership lives on the top-level tab, not the leaf pane.
+                    const groupId = s.tabParent?.groupId ?? null;
+                    const group = groupId ? tabGroups.find((g) => g.id === groupId) : null;
                     return {
                         sessionId: s.sessionId,
                         tabIndex: s.tabIndex,
-                        title: s.tab.title || `Terminal ${s.tabIndex}`,
+                        title: (0, tabTitle_1.tabDisplayTitle)(s.tabParent) || s.tab.title || `Terminal ${s.tabIndex}`,
+                        sessionDescription: s.tab.claudeTitle ?? null,
                         type: s.tab.constructor.name,
                         isActive: this.app.activeTab === s.tabParent,
+                        group: group ? {
+                            id: group.id,
+                            name: group.name,
+                            color: group.color ?? null,
+                        } : null,
                         hasActiveCommand: this._activeCommands.has(s.sessionId),
                         sshConnected: tabAny.sshSession?.open === true,
                         keyboardInteractivePending: Boolean(keyboardInteractivePrompt),
@@ -25828,6 +25867,26 @@ For split panes:
                         } : undefined,
                         pid: tabAny.session?.pty?.pid,
                         cwd: tabAny.session?.cwd,
+                        // JJT: per-tab Claude Code session state, present only on
+                        // JJT local terminal tabs (the bridge sets these fields).
+                        claude: 'jjtTabId' in tabAny ? {
+                            sessionId: tabAny.claudeSessionId ?? null,
+                            resumableSessionId: tabAny.resumableSessionId ?? null,
+                            running: tabAny.claudeSessionRunning ?? false,
+                            // Live indicator state, for debugging the tab-header
+                            // spinner. "working" is the ●●● thinking indicator
+                            // (busy OR recent transcript growth); "waiting" is the
+                            // needs-your-input indicator; "busy" is the raw hook
+                            // flag (set on UserPromptSubmit, cleared on Stop).
+                            waiting: tabAny.claudeWaiting ?? false,
+                            busy: tabAny.claudeBusy ?? false,
+                            working: tabAny.claudeWorking ?? false,
+                            title: tabAny.claudeTitle ?? null,
+                            transcriptPath: tabAny.claudeTranscriptPath ?? null,
+                            contextTokens: tabAny.claudeContextTokens ?? 0,
+                            contextWindow: tabAny.claudeContextWindow ?? 0,
+                            tabId: tabAny.jjtTabId ?? null,
+                        } : undefined,
                         // Split pane information
                         isSplit: s.isSplit,
                         splitTabIndex: s.splitTabIndex,
@@ -26059,7 +26118,7 @@ Special keys: \\x03 (Ctrl+C), \\x04 (Ctrl+D), \\x1b (Escape), \\r (Enter)`,
                 // confirmation must not be disabled by the separate SFTP approval option.
                 const pairMode = this.config.store.mcp?.pairProgrammingMode;
                 if (pairMode?.enabled && pairMode?.showConfirmationDialog) {
-                    const confirmed = await this.dialogService.showOperationConfirmation('send_input', session.tab.title || `Terminal ${session.tabIndex}`, `Terminal input after escape decoding:\n${JSON.stringify(processedInput)}`);
+                    const confirmed = await this.dialogService.showOperationConfirmation('send_input', (0, tabTitle_1.tabDisplayTitle)(session.tabParent) || `Terminal ${session.tabIndex}`, `Terminal input after escape decoding:\n${JSON.stringify(processedInput)}`);
                     if (!confirmed) {
                         return {
                             content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Input rejected by user' }) }]
@@ -26187,7 +26246,7 @@ Session targeting: sessionId (recommended) > tabIndex > title > profileName`,
                 }
                 const pairMode = this.config.store.mcp?.pairProgrammingMode;
                 if (pairMode?.enabled && pairMode?.showConfirmationDialog) {
-                    const confirmed = await this.dialogService.showOperationConfirmation('submit_keyboard_interactive_response', session.tab.title || `Terminal ${session.tabIndex}`, `${providedResponses.length} keyboard-interactive response(s)`);
+                    const confirmed = await this.dialogService.showOperationConfirmation('submit_keyboard_interactive_response', (0, tabTitle_1.tabDisplayTitle)(session.tabParent) || `Terminal ${session.tabIndex}`, `${providedResponses.length} keyboard-interactive response(s)`);
                     if (!confirmed) {
                         return {
                             content: [{
@@ -26584,7 +26643,7 @@ After focusing, commands sent to that split tab will go to the focused pane.`,
                                     message: `Focused pane ${session.paneIndex} of ${session.totalPanes}`,
                                     sessionId: session.sessionId,
                                     paneIndex: session.paneIndex,
-                                    title: session.tab.title
+                                    title: (0, tabTitle_1.tabDisplayTitle)(session.tabParent) || session.tab.title
                                 })
                             }]
                     };
@@ -30107,6 +30166,7 @@ const zod_1 = __webpack_require__(7552);
 const base_tool_category_1 = __webpack_require__(2099);
 const mcpLogger_service_1 = __webpack_require__(9924);
 const terminal_1 = __webpack_require__(2966);
+const tabTitle_1 = __webpack_require__(9981);
 /**
  * Tab Management Tools Category - Comprehensive tab and profile management
  */
@@ -30227,10 +30287,11 @@ let TabManagementToolCategory = class TabManagementToolCategory extends base_too
             this.logger.debug(`Found tab by tabIndex: ${locator.tabIndex}`);
             return found;
         }
-        // Priority 3: title (partial match, case-insensitive)
+        // Priority 3: title (partial match, case-insensitive). Match the name
+        // shown in the tab strip (honoring a manual rename), or the Claude
+        // session description shown in the top bar.
         if (locator.title) {
-            const titleLower = locator.title.toLowerCase();
-            const found = this.app.tabs.find(tab => tab.title?.toLowerCase().includes(titleLower));
+            const found = this.app.tabs.find(tab => (0, tabTitle_1.tabTitleMatches)(tab, locator.title));
             if (found) {
                 this.logger.debug(`Found tab by title: ${locator.title}`);
                 return found;
@@ -30475,7 +30536,7 @@ let TabManagementToolCategory = class TabManagementToolCategory extends base_too
                             sessionId,
                             tabId,
                             tabIndex,
-                            tabTitle: tab.title,
+                            tabTitle: (0, tabTitle_1.tabDisplayTitle)(tab),
                             profileName: profile.name,
                             profileType: profile.type,
                             tabReady,
@@ -30519,7 +30580,9 @@ let TabManagementToolCategory = class TabManagementToolCategory extends base_too
         return {
             name: 'list_tabs',
             description: `List all open tabs in Tabby with stable IDs and metadata.
-Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are reordered.`,
+Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are reordered.
+- title: the name shown in the tab strip, including any title you set by renaming the tab by hand
+- sessionDescription: the Claude Code session description shown in the tab's top bar, or null`,
             schema: zod_1.z.object({}),
             handler: async () => {
                 const tabs = this.app.tabs.map((tab, index) => {
@@ -30528,7 +30591,8 @@ Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are r
                     return {
                         tabId: this.getOrCreateTabId(tab),
                         tabIndex: index,
-                        title: tab.title || `Tab ${index}`,
+                        title: (0, tabTitle_1.tabDisplayTitle)(tabAny) || `Tab ${index}`,
+                        sessionDescription: (0, tabTitle_1.tabSessionDescription)(tabAny),
                         type: tab.constructor.name,
                         isActive: this.app.activeTab === tab,
                         hasFocus: tab.hasFocus,
@@ -30573,9 +30637,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 }
                 this.app.selectTab(tab);
                 const tabId = this.getOrCreateTabId(tab);
-                this.logger.info(`Selected tab: ${tab.title}`);
+                this.logger.info(`Selected tab: ${(0, tabTitle_1.tabDisplayTitle)(tab)}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabId, message: `Selected tab: ${tab.title}` }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabId, message: `Selected tab: ${(0, tabTitle_1.tabDisplayTitle)(tab)}` }) }]
                 };
             }
         };
@@ -30607,7 +30671,7 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                         content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No matching tab found' }) }]
                     };
                 }
-                const closedTitle = tab.title;
+                const closedTitle = (0, tabTitle_1.tabDisplayTitle)(tab);
                 const closedTabId = this.getOrCreateTabId(tab);
                 await this.app.closeTab(tab, !force);
                 this.logger.info(`Closed tab: ${closedTitle}`);
@@ -30667,9 +30731,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 }
                 const newTab = await this.app.duplicateTab(tab);
                 if (newTab) {
-                    this.logger.info(`Duplicated tab: ${tab.title}`);
+                    this.logger.info(`Duplicated tab: ${(0, tabTitle_1.tabDisplayTitle)(tab)}`);
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: true, message: `Duplicated tab: ${tab.title}`, newTabIndex: this.app.tabs.indexOf(newTab) }) }]
+                        content: [{ type: 'text', text: JSON.stringify({ success: true, message: `Duplicated tab: ${(0, tabTitle_1.tabDisplayTitle)(tab)}`, newTabIndex: this.app.tabs.indexOf(newTab) }) }]
                     };
                 }
                 else {
@@ -30688,9 +30752,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
             handler: async () => {
                 this.app.nextTab();
                 const currentTab = this.app.activeTab;
-                this.logger.info(`Switched to next tab: ${currentTab?.title}`);
+                this.logger.info(`Switched to next tab: ${currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab?.title }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined }) }]
                 };
             }
         };
@@ -30703,9 +30767,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
             handler: async () => {
                 this.app.previousTab();
                 const currentTab = this.app.activeTab;
-                this.logger.info(`Switched to previous tab: ${currentTab?.title}`);
+                this.logger.info(`Switched to previous tab: ${currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab?.title }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined }) }]
                 };
             }
         };
@@ -30719,9 +30783,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 this.app.moveSelectedTabLeft();
                 const currentTab = this.app.activeTab;
                 const index = currentTab ? this.app.tabs.indexOf(currentTab) : -1;
-                this.logger.info(`Moved tab left: ${currentTab?.title}`);
+                this.logger.info(`Moved tab left: ${currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab?.title, newIndex: index }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined, newIndex: index }) }]
                 };
             }
         };
@@ -30735,9 +30799,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 this.app.moveSelectedTabRight();
                 const currentTab = this.app.activeTab;
                 const index = currentTab ? this.app.tabs.indexOf(currentTab) : -1;
-                this.logger.info(`Moved tab right: ${currentTab?.title}`);
+                this.logger.info(`Moved tab right: ${currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab?.title, newIndex: index }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab ? (0, tabTitle_1.tabDisplayTitle)(currentTab) : undefined, newIndex: index }) }]
                 };
             }
         };
@@ -30750,9 +30814,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
             handler: async () => {
                 const tab = await this.app.reopenLastTab();
                 if (tab) {
-                    this.logger.info(`Reopened tab: ${tab.title}`);
+                    this.logger.info(`Reopened tab: ${(0, tabTitle_1.tabDisplayTitle)(tab)}`);
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: tab.title }) }]
+                        content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: (0, tabTitle_1.tabDisplayTitle)(tab) }) }]
                     };
                 }
                 else {
@@ -55256,7 +55320,10 @@ let McpService = McpService_1 = class McpService {
 };
 exports.McpService = McpService;
 // JJT: keep the MCP surface small. Only this curated, tab-focused set of tools
-// is ever exposed; everything else (exec, SFTP, SSH, extra tab ops) is off.
+// is ever exposed; everything else (exec, SFTP, SSH, input injection) is off.
+// The two read-only inspection tools below let Claude see what is on other
+// tabs (buffer contents, per-tab Claude session state) without being able to
+// type into them or run commands.
 McpService.JJT_ALLOWED_TOOLS = new Set([
     'list_tabs',
     'select_tab',
@@ -55265,6 +55332,10 @@ McpService.JJT_ALLOWED_TOOLS = new Set([
     'open_tab_in_group',
     'set_tab_group',
     'set_tab_title',
+    'get_session_list',
+    'get_terminal_buffer',
+    'send_input',
+    'exec_command',
 ]);
 exports.McpService = McpService = McpService_1 = __decorate([
     (0, core_1.Injectable)({ providedIn: 'root' }),
@@ -61151,7 +61222,7 @@ module.exports = /*#__PURE__*/JSON.parse('{"mcp.settings.title":"MCP 服务器�
 (module) {
 
 "use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"name":"tabby-mcp-server","version":"1.7.1","description":"MCP (Model Context Protocol) server plugin for Tabby terminal - Complete terminal control with 36 MCP tools including SFTP file transfer","homepage":"https://github.com/GentlemanHu/Tabby-MCP","repository":{"type":"git","url":"git+https://github.com/GentlemanHu/Tabby-MCP.git"},"bugs":{"url":"https://github.com/GentlemanHu/Tabby-MCP/issues"},"keywords":["tabby-plugin","mcp","model-context-protocol","terminal","ai","cursor","windsurf","ssh","sftp","sse"],"main":"dist/index.js","typings":"typings/index.d.ts","scripts":{"build":"webpack --progress --color","typecheck":"tsc --noEmit","test":"node scripts/smoke-test.js","check":"npm run typecheck && npm test && npm run build","watch":"webpack --progress --color --watch","install-plugin":"bash scripts/install.sh","uninstall-plugin":"bash scripts/uninstall.sh"},"files":["dist","typings","scripts/stdio-bridge.js"],"author":"GentlemanHu <justfeelingme@gmail.com>","contributors":["AI Assistant (Claude/Gemini)"],"license":"MIT","peerDependencies":{"@angular/animations":"*","@angular/common":"*","@angular/core":"*","@angular/forms":"*","@ng-bootstrap/ng-bootstrap":"*","rxjs":"*","tabby-core":"*","tabby-settings":"*","tabby-terminal":"*","tabby-ssh":"*"},"peerDependenciesMeta":{"tabby-ssh":{"optional":true},"@angular/animations":{"optional":true},"@angular/common":{"optional":true},"@angular/core":{"optional":true},"@angular/forms":{"optional":true},"@ng-bootstrap/ng-bootstrap":{"optional":true},"rxjs":{"optional":true},"tabby-core":{"optional":true},"tabby-settings":{"optional":true},"tabby-terminal":{"optional":true}},"devDependencies":{"@modelcontextprotocol/sdk":"1.25.2","@xterm/addon-serialize":"^0.12.0","express":"^4.18.2","zod":"^3.22.4","@angular/common":"^17.3.0","@angular/core":"^17.3.0","@angular/forms":"^17.3.0","@angular/animations":"^17.3.0","@angular/platform-browser":"^17.3.0","@ng-bootstrap/ng-bootstrap":"^16.0.0","rxjs":"^7.8.0","tabby-core":"^1.0.163","tabby-settings":"^1.0.163","tabby-ssh":"^1.0.163","tabby-terminal":"^1.0.163","@types/express":"^4.17.21","@types/node":"^20.10.0","apply-loader":"^2.0.0","css-loader":"^6.8.1","sass":"^1.69.0","sass-loader":"^13.3.2","strip-ansi":"^7.1.0","style-loader":"^3.3.3","ts-loader":"^9.5.0","typescript":"^5.3.0","webpack":"^5.89.0","webpack-cli":"^5.1.4"}}');
+module.exports = /*#__PURE__*/JSON.parse('{"name":"tabby-mcp-server","version":"1.7.2","description":"MCP (Model Context Protocol) server plugin for Tabby terminal - Complete terminal control with 36 MCP tools including SFTP file transfer","homepage":"https://github.com/GentlemanHu/Tabby-MCP","repository":{"type":"git","url":"git+https://github.com/GentlemanHu/Tabby-MCP.git"},"bugs":{"url":"https://github.com/GentlemanHu/Tabby-MCP/issues"},"keywords":["tabby-plugin","mcp","model-context-protocol","terminal","ai","cursor","windsurf","ssh","sftp","sse"],"main":"dist/index.js","typings":"typings/index.d.ts","scripts":{"build":"webpack --progress --color","typecheck":"tsc --noEmit","test":"node scripts/smoke-test.js","check":"npm run typecheck && npm test && npm run build","watch":"webpack --progress --color --watch","install-plugin":"bash scripts/install.sh","uninstall-plugin":"bash scripts/uninstall.sh"},"files":["dist","typings","scripts/stdio-bridge.js"],"author":"GentlemanHu <justfeelingme@gmail.com>","contributors":["AI Assistant (Claude/Gemini)"],"license":"MIT","peerDependencies":{"@angular/animations":"*","@angular/common":"*","@angular/core":"*","@angular/forms":"*","@ng-bootstrap/ng-bootstrap":"*","rxjs":"*","tabby-core":"*","tabby-settings":"*","tabby-terminal":"*","tabby-ssh":"*"},"peerDependenciesMeta":{"tabby-ssh":{"optional":true},"@angular/animations":{"optional":true},"@angular/common":{"optional":true},"@angular/core":{"optional":true},"@angular/forms":{"optional":true},"@ng-bootstrap/ng-bootstrap":{"optional":true},"rxjs":{"optional":true},"tabby-core":{"optional":true},"tabby-settings":{"optional":true},"tabby-terminal":{"optional":true}},"devDependencies":{"@modelcontextprotocol/sdk":"1.25.2","@xterm/addon-serialize":"^0.12.0","express":"^4.18.2","zod":"^3.22.4","@angular/common":"^17.3.0","@angular/core":"^17.3.0","@angular/forms":"^17.3.0","@angular/animations":"^17.3.0","@angular/platform-browser":"^17.3.0","@ng-bootstrap/ng-bootstrap":"^16.0.0","rxjs":"^7.8.0","tabby-core":"^1.0.163","tabby-settings":"^1.0.163","tabby-ssh":"^1.0.163","tabby-terminal":"^1.0.163","@types/express":"^4.17.21","@types/node":"^20.10.0","apply-loader":"^2.0.0","css-loader":"^6.8.1","sass":"^1.69.0","sass-loader":"^13.3.2","strip-ansi":"^7.1.0","style-loader":"^3.3.3","ts-loader":"^9.5.0","typescript":"^5.3.0","webpack":"^5.89.0","webpack-cli":"^5.1.4"}}');
 
 /***/ },
 
@@ -68749,6 +68820,75 @@ Utf7IMAPDecoder.prototype.end = function () {
   this.inBase64 = false
   this.base64Accum = ""
   return res
+}
+
+
+/***/ },
+
+/***/ 9981
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+// Pure helpers for resolving what the tab strip (sidebar) shows versus the
+// Claude Code session description.
+//
+// The strip shows a user-set custom title when a tab has been renamed by hand;
+// otherwise it shows the dynamic title. For a Claude Code tab the dynamic title
+// gets overwritten with the session description, so the raw title no longer
+// matches the name the user sees. The MCP must report the name the user sees,
+// so these helpers prefer the custom title and expose the session description
+// as a separate value. They are intentionally dependency-free and duck-typed so
+// they can be unit-tested in isolation.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.tabDisplayTitle = tabDisplayTitle;
+exports.tabSessionDescription = tabSessionDescription;
+exports.tabTitleMatches = tabTitleMatches;
+/**
+ * The name shown in the tab strip: a hand-set custom title wins over the
+ * dynamic title (which Claude Code may have overwritten).
+ */
+function tabDisplayTitle(tab) {
+    if (!tab) {
+        return '';
+    }
+    return tab.customTitle || tab.title || '';
+}
+/**
+ * The Claude Code session description shown in the tab's top bar, or null when
+ * the tab has none. For a split tab it comes from the pane that carries the
+ * Claude session.
+ */
+function tabSessionDescription(tab) {
+    if (!tab) {
+        return null;
+    }
+    if (tab.claudeTitle) {
+        return tab.claudeTitle;
+    }
+    const children = tab.getAllTabs ? tab.getAllTabs() : [];
+    for (const child of children) {
+        if (child && child.claudeTitle) {
+            return child.claudeTitle;
+        }
+    }
+    return null;
+}
+/**
+ * Case-insensitive partial match against the strip name or the Claude session
+ * description, so a title locator finds a tab by either the name the user sees
+ * or the session description shown in its top bar.
+ */
+function tabTitleMatches(tab, query) {
+    if (!tab || !query) {
+        return false;
+    }
+    const needle = query.toLowerCase();
+    if (tabDisplayTitle(tab).toLowerCase().includes(needle)) {
+        return true;
+    }
+    const description = tabSessionDescription(tab);
+    return description != null && description.toLowerCase().includes(needle);
 }
 
 

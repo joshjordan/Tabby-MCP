@@ -41,7 +41,10 @@ export class McpService {
     private controlToken?: string;
 
     // JJT: keep the MCP surface small. Only this curated, tab-focused set of tools
-    // is ever exposed; everything else (exec, SFTP, SSH, extra tab ops) is off.
+    // is ever exposed; everything else (exec, SFTP, SSH, input injection) is off.
+    // The two read-only inspection tools below let Claude see what is on other
+    // tabs (buffer contents, per-tab Claude session state) without being able to
+    // type into them or run commands.
     private static readonly JJT_ALLOWED_TOOLS = new Set<string>([
         'list_tabs',
         'select_tab',
@@ -50,6 +53,10 @@ export class McpService {
         'open_tab_in_group',
         'set_tab_group',
         'set_tab_title',
+        'get_session_list',
+        'get_terminal_buffer',
+        'send_input',
+        'exec_command',
     ]);
 
     private isToolEnabled(toolName: string): boolean {

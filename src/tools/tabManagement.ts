@@ -6,6 +6,7 @@ import { BaseToolCategory } from './base-tool-category';
 import { McpLoggerService } from '../services/mcpLogger.service';
 import { McpTool } from '../types/types';
 import { TerminalToolCategory } from './terminal';
+import { tabDisplayTitle, tabSessionDescription, tabTitleMatches } from './tabTitle';
 
 /**
  * Tab Management Tools Category - Comprehensive tab and profile management
@@ -143,10 +144,11 @@ export class TabManagementToolCategory extends BaseToolCategory {
             this.logger.debug(`Found tab by tabIndex: ${locator.tabIndex}`);
             return found;
         }
-        // Priority 3: title (partial match, case-insensitive)
+        // Priority 3: title (partial match, case-insensitive). Match the name
+        // shown in the tab strip (honoring a manual rename), or the Claude
+        // session description shown in the top bar.
         if (locator.title) {
-            const titleLower = locator.title.toLowerCase();
-            const found = this.app.tabs.find(tab => tab.title?.toLowerCase().includes(titleLower));
+            const found = this.app.tabs.find(tab => tabTitleMatches(tab as any, locator.title));
             if (found) {
                 this.logger.debug(`Found tab by title: ${locator.title}`);
                 return found;
@@ -430,7 +432,7 @@ export class TabManagementToolCategory extends BaseToolCategory {
                         sessionId,
                         tabId,
                         tabIndex,
-                        tabTitle: tab.title,
+                        tabTitle: tabDisplayTitle(tab),
                         profileName: profile.name,
                         profileType: profile.type,
                         tabReady,
@@ -476,7 +478,9 @@ export class TabManagementToolCategory extends BaseToolCategory {
         return {
             name: 'list_tabs',
             description: `List all open tabs in Tabby with stable IDs and metadata.
-Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are reordered.`,
+Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are reordered.
+- title: the name shown in the tab strip, including any title you set by renaming the tab by hand
+- sessionDescription: the Claude Code session description shown in the tab's top bar, or null`,
             schema: z.object({}),
             handler: async () => {
                 const tabs = this.app.tabs.map((tab, index) => {
@@ -485,7 +489,8 @@ Use tabId (stable) for reliable tab targeting; tabIndex may change if tabs are r
                     return {
                         tabId: this.getOrCreateTabId(tab),
                         tabIndex: index,
-                        title: tab.title || `Tab ${index}`,
+                        title: tabDisplayTitle(tabAny) || `Tab ${index}`,
+                        sessionDescription: tabSessionDescription(tabAny),
                         type: tab.constructor.name,
                         isActive: this.app.activeTab === tab,
                         hasFocus: tab.hasFocus,
@@ -535,9 +540,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 this.app.selectTab(tab);
                 const tabId = this.getOrCreateTabId(tab);
 
-                this.logger.info(`Selected tab: ${tab.title}`);
+                this.logger.info(`Selected tab: ${tabDisplayTitle(tab)}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabId, message: `Selected tab: ${tab.title}` }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabId, message: `Selected tab: ${tabDisplayTitle(tab)}` }) }]
                 };
             }
         };
@@ -572,7 +577,7 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                     };
                 }
 
-                const closedTitle = tab.title;
+                const closedTitle = tabDisplayTitle(tab);
                 const closedTabId = this.getOrCreateTabId(tab);
                 await this.app.closeTab(tab, !force);
 
@@ -638,9 +643,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 const newTab = await this.app.duplicateTab(tab);
 
                 if (newTab) {
-                    this.logger.info(`Duplicated tab: ${tab.title}`);
+                    this.logger.info(`Duplicated tab: ${tabDisplayTitle(tab)}`);
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: true, message: `Duplicated tab: ${tab.title}`, newTabIndex: this.app.tabs.indexOf(newTab) }) }]
+                        content: [{ type: 'text', text: JSON.stringify({ success: true, message: `Duplicated tab: ${tabDisplayTitle(tab)}`, newTabIndex: this.app.tabs.indexOf(newTab) }) }]
                     };
                 } else {
                     return {
@@ -660,9 +665,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 this.app.nextTab();
                 const currentTab = this.app.activeTab;
 
-                this.logger.info(`Switched to next tab: ${currentTab?.title}`);
+                this.logger.info(`Switched to next tab: ${currentTab ? tabDisplayTitle(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab?.title }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab ? tabDisplayTitle(currentTab) : undefined }) }]
                 };
             }
         };
@@ -677,9 +682,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 this.app.previousTab();
                 const currentTab = this.app.activeTab;
 
-                this.logger.info(`Switched to previous tab: ${currentTab?.title}`);
+                this.logger.info(`Switched to previous tab: ${currentTab ? tabDisplayTitle(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab?.title }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, currentTab: currentTab ? tabDisplayTitle(currentTab) : undefined }) }]
                 };
             }
         };
@@ -695,9 +700,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 const currentTab = this.app.activeTab;
                 const index = currentTab ? this.app.tabs.indexOf(currentTab) : -1;
 
-                this.logger.info(`Moved tab left: ${currentTab?.title}`);
+                this.logger.info(`Moved tab left: ${currentTab ? tabDisplayTitle(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab?.title, newIndex: index }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab ? tabDisplayTitle(currentTab) : undefined, newIndex: index }) }]
                 };
             }
         };
@@ -713,9 +718,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 const currentTab = this.app.activeTab;
                 const index = currentTab ? this.app.tabs.indexOf(currentTab) : -1;
 
-                this.logger.info(`Moved tab right: ${currentTab?.title}`);
+                this.logger.info(`Moved tab right: ${currentTab ? tabDisplayTitle(currentTab) : undefined}`);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab?.title, newIndex: index }) }]
+                    content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: currentTab ? tabDisplayTitle(currentTab) : undefined, newIndex: index }) }]
                 };
             }
         };
@@ -730,9 +735,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 const tab = await this.app.reopenLastTab();
 
                 if (tab) {
-                    this.logger.info(`Reopened tab: ${tab.title}`);
+                    this.logger.info(`Reopened tab: ${tabDisplayTitle(tab)}`);
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: tab.title }) }]
+                        content: [{ type: 'text', text: JSON.stringify({ success: true, tabTitle: tabDisplayTitle(tab) }) }]
                     };
                 } else {
                     return {
